@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "557298009024",
+    "project_id": "scamdetector-2a501",
+    "storage_bucket": "scamdetector-2a501.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:557298009024:android:20f91a1afc6bb678ae3e25",
+        "android_client_info": {
+          "package_name": "com.rishitha.scamdetector"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCazfL5UQo1iur1PI2gS8gUttZW3VC0PIs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
