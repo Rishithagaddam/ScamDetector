@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -17,13 +17,21 @@ import {
   confirmPhoneOtp,
   getCurrentUser,
   requestPhoneOtp,
+  signOutCurrentUser,
+  subscribeToAuthState,
   type PhoneConfirmation,
 } from '@/lib/firebase-auth';
-import { saveUserProfile, type SavedUserProfile, type TrustedContactPayload } from '@/lib/api';
+import {
+  getUserProfile,
+  saveUserProfile,
+  type SavedUserProfile,
+  type TrustedContactPayload,
+} from '@/lib/api';
 import { Colors, Fonts, MaxContentWidth, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 
 type Step = 'phone' | 'otp' | 'profile' | 'done';
+type Screen = 'loading' | 'onboarding' | 'dashboard';
 
 type ContactDraft = TrustedContactPayload & {
   id: string;
@@ -59,6 +67,17 @@ function normalizeContact(contact: ContactDraft): TrustedContactPayload | null {
 }
 
 function getErrorMessage(error: unknown) {
+  const errorCode = (error as { code?: string })?.code ?? '';
+  const errorText = error instanceof Error ? error.message : String(error ?? '');
+
+  if (errorCode.includes('billing-not-enabled') || errorText.includes('billing_not_enabled')) {
+    return 'Firebase phone verification needs billing enabled for this project. Enable billing for scamdetector-2a501, then try again.';
+  }
+
+  if (errorCode.includes('too-many-requests')) {
+    return 'Firebase temporarily blocked more verification requests. Wait and try again later, or use a Firebase test phone number.';
+  }
+
   if (error instanceof Error) return error.message;
   return 'Something went wrong while saving the profile.';
 }
@@ -194,6 +213,7 @@ function Field({
 
 export default function HomeScreen() {
   const theme = useTheme();
+  const [screen, setScreen] = useState<Screen>('loading');
   const [step, setStep] = useState<Step>('phone');
   const [phoneNumber, setPhoneNumber] = useState(DEFAULT_COUNTRY_CODE);
   const [verificationConfirmation, setVerificationConfirmation] = useState<PhoneConfirmation | null>(null);
@@ -206,6 +226,47 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  useEffect(() => {
+    return subscribeToAuthState(async (user) => {
+      if (!user) {
+        setScreen('onboarding');
+        return;
+      }
+
+      try {
+        setLoading(true);
+        setError('');
+        setFirebaseUid(user.uid);
+        setVerifiedPhoneNumber(user.phoneNumber ?? '');
+        const idToken = await user.getIdToken();
+        const response = await getUserProfile(user.uid, idToken);
+        const profile = response.user;
+
+        setSavedProfile(profile);
+        setName(profile.name);
+        setVerifiedPhoneNumber(profile.phoneNumber);
+        setTrustedContacts(
+          profile.trustedContacts.map((contact) => ({
+            ...contact,
+            id: createContactDraft().id,
+          })),
+        );
+        setScreen('dashboard');
+      } catch (nextError) {
+        const status = (nextError as Error & { status?: number }).status;
+        if (status === 404) {
+          setStep('profile');
+          setScreen('onboarding');
+        } else {
+          setError(getErrorMessage(nextError));
+          setScreen('onboarding');
+        }
+      } finally {
+        setLoading(false);
+      }
+    });
+  }, []);
+
   function resetFlow() {
     setStep('phone');
     setPhoneNumber(DEFAULT_COUNTRY_CODE);
@@ -216,8 +277,20 @@ export default function HomeScreen() {
     setName('');
     setTrustedContacts([createContactDraft()]);
     setSavedProfile(null);
+    setScreen('onboarding');
     setLoading(false);
     setError('');
+  }
+
+  async function handleSignOut() {
+    try {
+      setLoading(true);
+      await signOutCurrentUser();
+      resetFlow();
+    } catch (nextError) {
+      setError(getErrorMessage(nextError));
+      setLoading(false);
+    }
   }
 
   async function handleSendOtp() {
@@ -313,8 +386,9 @@ export default function HomeScreen() {
       });
 
       setSavedProfile(response.user);
+      setScreen('dashboard');
       setStep('done');
-      Alert.alert('Profile saved', 'Your Firebase UID and trusted contacts were stored in MongoDB.');
+      Alert.alert('Profile ready', 'Your profile and trusted contacts have been saved.');
     } catch (nextError) {
       setError(getErrorMessage(nextError));
     } finally {
@@ -336,6 +410,91 @@ export default function HomeScreen() {
     setTrustedContacts((current) => (current.length > 1 ? current.filter((contact) => contact.id !== id) : current));
   }
 
+  if (screen === 'loading') {
+    return (
+      <ThemedView style={[styles.page, { backgroundColor: theme.background }]}>
+        <SafeAreaView style={styles.safeArea}>
+          <View style={styles.loadingState}>
+            <ThemedText type="subtitle">Welcome back</ThemedText>
+            <ThemedText themeColor="textSecondary">Loading your profile...</ThemedText>
+          </View>
+        </SafeAreaView>
+      </ThemedView>
+    );
+  }
+
+  if (screen === 'dashboard' && savedProfile) {
+    return (
+      <ThemedView style={[styles.page, { backgroundColor: theme.background }]}>
+        <SafeAreaView style={styles.safeArea}>
+          <ScrollView contentContainerStyle={styles.scrollContent}>
+            <View style={styles.dashboardHeader}>
+              <View>
+                <ThemedText type="smallBold" themeColor="textSecondary">
+                  Scam Detector
+                </ThemedText>
+                <ThemedText type="subtitle">Hello, {savedProfile.name}</ThemedText>
+              </View>
+              <ActionButton label="Sign out" onPress={handleSignOut} secondary disabled={loading} />
+            </View>
+
+            {error ? (
+              <ThemedView type="backgroundElement" style={[styles.alert, { borderColor: '#E5484D' }]}>
+                <ThemedText style={{ color: '#E5484D' }}>{error}</ThemedText>
+              </ThemedView>
+            ) : null}
+
+            <ThemedView type="backgroundElement" style={styles.dashboardBanner}>
+              <ThemedText type="smallBold">You are protected</ThemedText>
+              <ThemedText themeColor="textSecondary">
+                Your trusted contacts are ready to receive scam alerts.
+              </ThemedText>
+            </ThemedView>
+
+            <ThemedView type="backgroundElement" style={styles.dashboardCard}>
+              <View style={styles.dashboardCardHeader}>
+                <View>
+                  <ThemedText type="smallBold">Your profile</ThemedText>
+                  <ThemedText themeColor="textSecondary">{savedProfile.phoneNumber}</ThemedText>
+                </View>
+                <ActionButton
+                  label="Edit"
+                  onPress={() => {
+                    setStep('profile');
+                    setScreen('onboarding');
+                    setError('');
+                  }}
+                  secondary
+                />
+              </View>
+              <ThemedText themeColor="textSecondary">
+                {savedProfile.trustedContacts.length} trusted contact
+                {savedProfile.trustedContacts.length === 1 ? '' : 's'} added
+              </ThemedText>
+            </ThemedView>
+
+            <ThemedView type="backgroundElement" style={styles.dashboardCard}>
+              <ThemedText type="smallBold">Trusted contacts</ThemedText>
+              <View style={styles.dashboardContacts}>
+                {savedProfile.trustedContacts.map((contact) => (
+                  <View key={`${contact.name}-${contact.phoneNumber}`} style={styles.dashboardContactRow}>
+                    <View style={styles.contactAvatar}>
+                      <ThemedText type="smallBold">{contact.name.charAt(0).toUpperCase()}</ThemedText>
+                    </View>
+                    <View style={styles.dashboardContactDetails}>
+                      <ThemedText type="smallBold">{contact.name}</ThemedText>
+                      <ThemedText themeColor="textSecondary">{contact.phoneNumber}</ThemedText>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            </ThemedView>
+          </ScrollView>
+        </SafeAreaView>
+      </ThemedView>
+    );
+  }
+
   return (
     <ThemedView style={[styles.page, { backgroundColor: theme.background }]}>
       <SafeAreaView style={styles.safeArea}>
@@ -344,22 +503,21 @@ export default function HomeScreen() {
             <View style={styles.hero}>
               <View style={[styles.badge, { backgroundColor: theme.backgroundSelected }]}>
                 <ThemedText type="smallBold" themeColor="textSecondary">
-                  Scam Detector onboarding
+                  Scam Detector
                 </ThemedText>
               </View>
               <ThemedText type="title" style={styles.title}>
-                Firebase phone auth to MongoDB profile save
+                Welcome back
               </ThemedText>
               <ThemedText themeColor="textSecondary" style={styles.description}>
-                Verify a phone number with Firebase, collect the user profile and trusted contacts,
-                then persist the Firebase UID in MongoDB Atlas.
+                Sign in with your mobile number to help keep your calls and messages safer.
               </ThemedText>
             </View>
 
             <View style={styles.progressRow}>
-              <StepPill active={step === 'phone'} label="1. Phone" />
-              <StepPill active={step === 'otp'} label="2. OTP" />
-              <StepPill active={step === 'profile' || step === 'done'} label="3. Profile" />
+              <StepPill active={step === 'phone'} label="Mobile number" />
+              <StepPill active={step === 'otp'} label="Verification" />
+              <StepPill active={step === 'profile' || step === 'done'} label="Your profile" />
             </View>
 
             {error ? (
@@ -370,8 +528,8 @@ export default function HomeScreen() {
 
             {step === 'phone' ? (
               <SectionCard
-                title="Step 1: verify the phone number"
-                subtitle="Firebase sends the OTP to this number and creates the user UID after verification.">
+                title="Enter your mobile number"
+                subtitle="We will send you a one-time verification code.">
                 <Field
                   label="Phone number"
                   value={phoneNumber}
@@ -381,14 +539,14 @@ export default function HomeScreen() {
                   autoComplete="tel"
                   textContentType="telephoneNumber"
                 />
-                <ActionButton label={loading ? 'Sending OTP...' : 'Send OTP'} onPress={handleSendOtp} disabled={loading} />
+                <ActionButton label={loading ? 'Sending code...' : 'Continue'} onPress={handleSendOtp} disabled={loading} />
               </SectionCard>
             ) : null}
 
             {step === 'otp' ? (
               <SectionCard
-                title="Step 2: confirm the OTP"
-                subtitle={`Code was sent to ${verifiedPhoneNumber || normalizePhoneNumber(phoneNumber)}.`}>
+                title="Enter verification code"
+                subtitle={`We sent a 6-digit code to ${verifiedPhoneNumber || normalizePhoneNumber(phoneNumber)}.`}>
                 <Field
                   label="OTP"
                   value={verificationCode}
@@ -400,7 +558,7 @@ export default function HomeScreen() {
                 />
                 <View style={styles.inlineButtons}>
                   <ActionButton
-                    label={loading ? 'Verifying...' : 'Verify OTP'}
+                    label={loading ? 'Checking...' : 'Verify and continue'}
                     onPress={handleVerifyOtp}
                     disabled={loading}
                   />
@@ -419,8 +577,8 @@ export default function HomeScreen() {
 
             {step === 'profile' || step === 'done' ? (
               <SectionCard
-                title="Step 3: create the profile"
-                subtitle={`Firebase UID: ${firebaseUid || 'not verified yet'}`}>
+                title="Set up your profile"
+                subtitle="Add your details and people you trust.">
                 <Field
                   label="Name"
                   value={name}
@@ -430,7 +588,7 @@ export default function HomeScreen() {
                   textContentType="name"
                 />
                 <Field
-                  label="Verified phone number"
+                  label="Mobile number"
                   value={verifiedPhoneNumber}
                   onChangeText={setVerifiedPhoneNumber}
                   placeholder="+919876543210"
@@ -446,7 +604,6 @@ export default function HomeScreen() {
                       Add friends or family who should receive scam alerts.
                     </ThemedText>
                   </View>
-                  <ActionButton label="Add contact" onPress={addTrustedContact} secondary disabled={loading} />
                 </View>
 
                 <View style={styles.contactsList}>
@@ -483,10 +640,17 @@ export default function HomeScreen() {
                   ))}
                 </View>
 
+                <ActionButton
+                  label="Add another contact"
+                  onPress={addTrustedContact}
+                  secondary
+                  disabled={loading}
+                />
+
                 {step !== 'done' ? (
                   <View style={styles.inlineButtons}>
                     <ActionButton
-                      label={loading ? 'Saving...' : 'Save to MongoDB'}
+                      label={loading ? 'Saving...' : 'Finish setup'}
                       onPress={handleSaveProfile}
                       disabled={loading}
                     />
@@ -503,7 +667,7 @@ export default function HomeScreen() {
                   <ThemedView type="backgroundSelected" style={styles.successPanel}>
                     <ThemedText type="smallBold">Saved profile</ThemedText>
                     <ThemedText themeColor="textSecondary" style={styles.successText}>
-                      MongoDB stored the profile for {savedProfile.name} with UID {savedProfile.firebaseUid}.
+                      Your profile is ready. Trusted contacts will receive alerts when needed.
                     </ThemedText>
                     <ActionButton label="Start over" onPress={resetFlow} secondary />
                   </ThemedView>
@@ -526,6 +690,13 @@ const styles = StyleSheet.create({
   },
   flex: {
     flex: 1,
+  },
+  loadingState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.two,
+    paddingHorizontal: Spacing.four,
   },
   scrollContent: {
     width: '100%',
@@ -635,5 +806,49 @@ const styles = StyleSheet.create({
   },
   successText: {
     maxWidth: 600,
+  },
+  dashboardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.three,
+  },
+  dashboardBanner: {
+    borderRadius: Spacing.four,
+    padding: Spacing.four,
+    gap: Spacing.one,
+    borderLeftWidth: 4,
+    borderLeftColor: '#1D7CF2',
+  },
+  dashboardCard: {
+    borderRadius: Spacing.four,
+    padding: Spacing.four,
+    gap: Spacing.three,
+  },
+  dashboardCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: Spacing.two,
+  },
+  dashboardContacts: {
+    gap: Spacing.three,
+  },
+  dashboardContactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
+  },
+  contactAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#DCEBFF',
+  },
+  dashboardContactDetails: {
+    flex: 1,
+    gap: Spacing.half,
   },
 });

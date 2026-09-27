@@ -56,3 +56,21 @@ export async function saveUserProfile(payload: SaveUserProfilePayload) {
 
   return body as { user: SavedUserProfile };
 }
+
+export async function getUserProfile(firebaseUid: string, idToken?: string) {
+  const response = await fetch(`${getApiBaseUrl()}/api/users/profile/${encodeURIComponent(firebaseUid)}`, {
+    headers: idToken ? { Authorization: `Bearer ${idToken}` } : undefined,
+  });
+
+  const body = (await response.json().catch(() => null)) as
+    | { message?: string; user?: SavedUserProfile }
+    | null;
+
+  if (!response.ok) {
+    const error = new Error(body?.message ?? `Request failed with status ${response.status}`);
+    (error as Error & { status?: number }).status = response.status;
+    throw error;
+  }
+
+  return body as { user: SavedUserProfile };
+}

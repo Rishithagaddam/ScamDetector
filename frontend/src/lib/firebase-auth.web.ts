@@ -13,3 +13,10 @@ export async function confirmPhoneOtp() {
 export function getCurrentUser() {
   return null;
 }
+
+export function subscribeToAuthState(callback: (user: null) => void) {
+  callback(null);
+  return () => undefined;
+}
+
+export async function signOutCurrentUser() {}
